@@ -44,6 +44,37 @@ func TestInlineEdit_ReturnsVersionedEditFromEngine(t *testing.T) {
 	}
 }
 
+// The engine may return a whole-window rewrite even when only a few lines
+// change; we must tighten it to the changed hunk(s) so the client doesn't shade
+// the whole range (the "whole file in a blue box" bug).
+func TestInlineEdit_TightensWholeWindowRewriteToChangedHunk(t *testing.T) {
+	s := NewDocumentStore()
+	uri := "file:///a.py"
+	s.Open(uri, "l0\nl1\nl2\nl3\nl4\n", 1)
+
+	// engine "rewrites" the whole file but only changes l2 -> L2.
+	engine := EngineFunc(func(_ context.Context, _ Snapshot) (*Completion, error) {
+		return &Completion{StartLine: 0, EndLineInc: 4, Lines: []string{"l0", "l1", "L2", "l3", "l4"}}, nil
+	})
+
+	res, err := NewHandler(s, engine).InlineEdit(context.Background(), InlineEditParams{
+		TextDocument: TextDocumentID{URI: uri, Version: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Edits) != 1 {
+		t.Fatalf("want 1 tight edit, got %d: %+v", len(res.Edits), res.Edits)
+	}
+	e := res.Edits[0]
+	if e.Range.Start.Line != 2 || e.Range.End.Line != 3 {
+		t.Errorf("range not tightened to the changed line: got %+v want line 2->3", e.Range)
+	}
+	if e.Text != "L2\n" {
+		t.Errorf("text: got %q want %q", e.Text, "L2\n")
+	}
+}
+
 // After a didChange, requests compute against the new text and echo the new
 // version — the version-tracking sidekick's persistence gate depends on.
 func TestInlineEdit_UsesLatestVersionAfterChange(t *testing.T) {

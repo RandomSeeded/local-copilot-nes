@@ -203,13 +203,109 @@ func (h *Handler) InlineEdit(ctx context.Context, p InlineEditParams) (InlineEdi
 	if c == nil {
 		return none, nil
 	}
-	edit := NesEdit{
-		Range: Range{
-			Start: Position{Line: c.StartLine, Character: 0},
-			End:   Position{Line: c.EndLineInc + 1, Character: 0},
-		},
-		Text:         strings.Join(c.Lines, "\n") + "\n",
-		TextDocument: TextDocumentID{URI: snap.URI, Version: snap.Version},
+
+	// The engine returns a whole-window replacement, but often only a few lines
+	// differ. Diff the replaced region against the replacement and emit one tight
+	// edit per changed hunk, so the client highlights only what changes rather
+	// than shading the whole window.
+	doc := splitDocLines(snap.Text)
+	start := clamp(c.StartLine, 0, len(doc))
+	end := clamp(c.EndLineInc+1, start, len(doc))
+	region := doc[start:end]
+
+	edits := make([]NesEdit, 0)
+	for _, hk := range lineHunks(region, c.Lines) {
+		at := start + hk.oldStart
+		text := ""
+		if len(hk.newLines) > 0 {
+			text = strings.Join(hk.newLines, "\n") + "\n"
+		}
+		edits = append(edits, NesEdit{
+			Range: Range{
+				Start: Position{Line: at, Character: 0},
+				End:   Position{Line: at + hk.oldCount, Character: 0},
+			},
+			Text:         text,
+			TextDocument: TextDocumentID{URI: snap.URI, Version: snap.Version},
+		})
 	}
-	return InlineEditResult{Edits: []NesEdit{edit}}, nil
+	if len(edits) == 0 {
+		return none, nil
+	}
+	return InlineEditResult{Edits: edits}, nil
+}
+
+// lineHunk is a contiguous line replacement: replace oldCount lines starting at
+// oldStart (indices into the replaced region) with newLines.
+type lineHunk struct {
+	oldStart int
+	oldCount int
+	newLines []string
+}
+
+// lineHunks computes minimal contiguous line-level changes between a and b via
+// an LCS, so unchanged lines between changes split into separate hunks.
+func lineHunks(a, b []string) []lineHunk {
+	n, m := len(a), len(b)
+	lcs := make([][]int, n+1)
+	for i := range lcs {
+		lcs[i] = make([]int, m+1)
+	}
+	for i := n - 1; i >= 0; i-- {
+		for j := m - 1; j >= 0; j-- {
+			if a[i] == b[j] {
+				lcs[i][j] = lcs[i+1][j+1] + 1
+			} else if lcs[i+1][j] >= lcs[i][j+1] {
+				lcs[i][j] = lcs[i+1][j]
+			} else {
+				lcs[i][j] = lcs[i][j+1]
+			}
+		}
+	}
+
+	var hs []lineHunk
+	i, j := 0, 0
+	for i < n || j < m {
+		if i < n && j < m && a[i] == b[j] {
+			i++
+			j++
+			continue
+		}
+		oldStart := i
+		var repl []string
+		for i < n || j < m {
+			if i < n && j < m && a[i] == b[j] {
+				break
+			}
+			if j < m && (i >= n || lcs[i][j+1] >= lcs[i+1][j]) {
+				repl = append(repl, b[j])
+				j++
+			} else {
+				i++
+			}
+		}
+		hs = append(hs, lineHunk{oldStart: oldStart, oldCount: i - oldStart, newLines: repl})
+	}
+	return hs
+}
+
+func splitDocLines(text string) []string {
+	if text == "" {
+		return []string{}
+	}
+	lines := strings.Split(text, "\n")
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		lines = lines[:n-1]
+	}
+	return lines
+}
+
+func clamp(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
