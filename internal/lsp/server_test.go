@@ -91,6 +91,36 @@ func TestServe_UnknownRequestMethodReturnsMethodNotFound(t *testing.T) {
 	}
 }
 
+// A request handler that returns a nil result must still produce a valid
+// JSON-RPC success response with "result": null — not a message missing both
+// result and error (which nvim rejects as INVALID_SERVER_MESSAGE, e.g. shutdown).
+func TestServe_NilResultSerializesAsNull(t *testing.T) {
+	s := NewServer()
+	s.Handle("shutdown", func(_ context.Context, _ json.RawMessage) (any, error) {
+		return nil, nil
+	})
+
+	out := serve(t, s, `{"jsonrpc":"2.0","id":9,"method":"shutdown"}`)
+	body, err := ReadMessage(bufio.NewReader(bytes.NewReader(out)))
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := raw["error"]; ok {
+		t.Errorf("success response must not carry an error: %s", body)
+	}
+	r, ok := raw["result"]
+	if !ok {
+		t.Fatalf("result key missing (invalid JSON-RPC): %s", body)
+	}
+	if string(r) != "null" {
+		t.Errorf("result: got %s want null", r)
+	}
+}
+
 // A $/cancelRequest for an in-flight request must cancel that request's context.
 // With synchronous dispatch the slow handler would block the read loop forever;
 // this forces concurrent dispatch + per-id cancellation.

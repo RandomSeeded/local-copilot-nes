@@ -135,6 +135,10 @@ func (s *Server) Serve(ctx context.Context, r *bufio.Reader, w io.Writer) error 
 			resp := responseMessage{JSONRPC: "2.0", ID: req.ID}
 			if result, herr := h(reqCtx, req.Params); herr != nil {
 				resp.Error = &rpcError{Code: codeInternalError, Message: herr.Error()}
+			} else if result == nil {
+				// success with no payload must still send result: null (JSON-RPC),
+				// else nvim rejects it as INVALID_SERVER_MESSAGE.
+				resp.Result = json.RawMessage("null")
 			} else {
 				resp.Result = result
 			}
