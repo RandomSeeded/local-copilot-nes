@@ -35,6 +35,14 @@ type Snapshot struct {
 	Text    string
 	Version int
 	Cursor  Position
+	Recent  []Edit // recent changes to this document, newest last
+}
+
+// Edit is a before/after text pair describing a recent change — supplied to the
+// engine so it can propose the analogous next edit (drives chaining).
+type Edit struct {
+	Before string
+	After  string
 }
 
 // Completion is a whole-line replacement produced by the Engine: replace
