@@ -5,3 +5,4 @@ server/**/node_modules/
 # Go
 /local-copilot-nes
 *.test
+/bin/
