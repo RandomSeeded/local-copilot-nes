@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """#05 e2e: measure copilotInlineEdit latency and confirm mid-flight
 $/cancelRequest aborts the in-flight model call through the real binary."""
-import json, subprocess, time, sys, statistics
+import json, os, subprocess, time, sys, statistics
 
-BIN = "./bin/local-copilot-nes"
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BIN = os.environ.get("NES_BIN", os.path.join(_REPO_ROOT, "bin", "local-copilot-nes"))
 
 def frame(o):
     b = json.dumps(o).encode()

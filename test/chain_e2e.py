@@ -2,9 +2,10 @@
 """E2E chaining test against the real binary: simulate sidekick's flow — a manual
 fix (didChange) then a copilotInlineEdit at the next site — and confirm the model
 propagates greet->greetings via recent_changes tracked in the DocumentStore."""
-import json, subprocess, sys, threading
+import json, os, subprocess, sys, threading
 
-BIN = "./bin/local-copilot-nes"
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BIN = os.environ.get("NES_BIN", os.path.join(_REPO_ROOT, "bin", "local-copilot-nes"))
 
 def frame(o):
     b = json.dumps(o).encode()
