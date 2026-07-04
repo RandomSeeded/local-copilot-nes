@@ -49,6 +49,13 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
+// inflightEntry tracks a running request's cancel func plus a monotonic seq that
+// identifies which registration owns the map slot for a given (possibly reused) id.
+type inflightEntry struct {
+	cancel context.CancelFunc
+	seq    uint64
+}
+
 const (
 	codeMethodNotFound = -32601
 	codeInternalError  = -32603
@@ -64,7 +71,13 @@ func (s *Server) Serve(ctx context.Context, r *bufio.Reader, w io.Writer) error 
 	writeResp := func(resp responseMessage) {
 		out, err := json.Marshal(resp)
 		if err != nil {
-			return
+			// Marshaling the payload failed; still send a well-formed error for
+			// this id so the client doesn't hang forever waiting on a reply.
+			out, err = json.Marshal(responseMessage{JSONRPC: "2.0", ID: resp.ID,
+				Error: &rpcError{Code: codeInternalError, Message: "response marshal error: " + err.Error()}})
+			if err != nil {
+				return
+			}
 		}
 		writeMu.Lock()
 		defer writeMu.Unlock()
@@ -72,7 +85,11 @@ func (s *Server) Serve(ctx context.Context, r *bufio.Reader, w io.Writer) error 
 	}
 
 	var mu sync.Mutex
-	inflight := make(map[string]context.CancelFunc)
+	// inflight maps a request id to its cancel func. seq disambiguates a reused
+	// id: a finishing request only deletes its own entry, never a newer request
+	// that registered under the same id, so cancellation still reaches the new one.
+	inflight := make(map[string]inflightEntry)
+	var seq uint64
 	var wg sync.WaitGroup
 
 	for {
@@ -93,8 +110,8 @@ func (s *Server) Serve(ctx context.Context, r *bufio.Reader, w io.Writer) error 
 		if req.Method == methodCancelRequest {
 			if key := cancelKey(req.Params); key != "" {
 				mu.Lock()
-				if cancel := inflight[key]; cancel != nil {
-					cancel()
+				if e, ok := inflight[key]; ok {
+					e.cancel()
 				}
 				mu.Unlock()
 			}
@@ -119,7 +136,9 @@ func (s *Server) Serve(ctx context.Context, r *bufio.Reader, w io.Writer) error 
 		reqCtx, cancel := context.WithCancel(ctx)
 		key := string(*req.ID)
 		mu.Lock()
-		inflight[key] = cancel
+		seq++
+		mySeq := seq
+		inflight[key] = inflightEntry{cancel: cancel, seq: mySeq}
 		mu.Unlock()
 
 		wg.Add(1)
@@ -127,7 +146,9 @@ func (s *Server) Serve(ctx context.Context, r *bufio.Reader, w io.Writer) error 
 			defer wg.Done()
 			defer func() {
 				mu.Lock()
-				delete(inflight, key)
+				if e, ok := inflight[key]; ok && e.seq == mySeq {
+					delete(inflight, key) // only remove our own entry, not a reused-id successor
+				}
 				mu.Unlock()
 				cancel()
 			}()

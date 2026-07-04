@@ -123,6 +123,74 @@ func TestChange_CoalesceToNoOpDropsEntry(t *testing.T) {
 	}
 }
 
+// Reverting one edit must not corrupt an earlier edit at the same line index.
+// Regression: lastLine was left stale after a revert-pop, so a later edit at
+// that index coalesced into the wrong (earlier) recent entry.
+func TestChange_RevertThenReeditSameLineDoesNotCorruptEarlierEdit(t *testing.T) {
+	s := NewDocumentStore()
+	uri := "file:///a.py"
+	s.Open(uri, "l0\nl1\nl2\nl3\nl4\nl5\n", 1)
+	s.Change(uri, "L0\nl1\nl2\nl3\nl4\nl5\n", 2) // edit line 0
+	s.Change(uri, "L0\nl1\nl2\nl3\nl4\nL5\n", 3) // edit line 5
+	s.Change(uri, "L0\nl1\nl2\nl3\nl4\nl5\n", 4) // revert line 5 (drops that entry)
+	s.Change(uri, "L0\nl1\nl2\nl3\nl4\nX5\n", 5) // edit line 5 again
+
+	snap, _ := s.snapshot(uri, Position{})
+	// The line-0 edit must be intact, and the new line-5 edit must be its own entry.
+	if len(snap.Recent) != 2 {
+		t.Fatalf("want 2 edits, got %d: %+v", len(snap.Recent), snap.Recent)
+	}
+	if e := snap.Recent[0]; e.Before != "l0" || e.After != "L0" {
+		t.Errorf("line-0 edit corrupted: got %+v want {l0 -> L0}", e)
+	}
+	if e := snap.Recent[1]; e.Before != "l5" || e.After != "X5" {
+		t.Errorf("line-5 edit wrong: got %+v want {l5 -> X5}", e)
+	}
+}
+
+// An edit whose changed span merely starts at the same line as the previous
+// edit — but is not a continuation of it — must not coalesce (which produced an
+// incoherent one-line-Before / multi-line-After entry).
+func TestChange_DoesNotCoalesceMismatchedSpanAtSameLine(t *testing.T) {
+	s := NewDocumentStore()
+	uri := "file:///a.py"
+	s.Open(uri, "l0\nl1\nl2\nl3\n", 1)
+	s.Change(uri, "l0\nl1\nL2\nl3\n", 2)  // change only line 2
+	s.Change(uri, "l0\nl1\nX2\nX3\n", 3)  // now change lines 2 AND 3
+
+	snap, _ := s.snapshot(uri, Position{})
+	for _, e := range snap.Recent {
+		if e.Before == "l2" && e.After == "X2\nX3" {
+			t.Fatalf("mismatched-span edits were coalesced into an incoherent entry: %+v", e)
+		}
+	}
+}
+
+// An edit through a final line that lacks a trailing newline must not append
+// one (which would insert a spurious blank last line when the suggestion is
+// applied).
+func TestInlineEdit_NoSpuriousNewlineOnFinalLineWithoutTrailingNewline(t *testing.T) {
+	s := NewDocumentStore()
+	uri := "file:///a.py"
+	s.Open(uri, "a\nb", 1) // no trailing newline
+
+	engine := EngineFunc(func(_ context.Context, _ Snapshot) (*Completion, error) {
+		return &Completion{StartLine: 0, EndLineInc: 1, Lines: []string{"a", "B"}}, nil
+	})
+	res, err := NewHandler(s, engine).InlineEdit(context.Background(), InlineEditParams{
+		TextDocument: TextDocumentID{URI: uri, Version: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Edits) != 1 {
+		t.Fatalf("want 1 edit, got %d: %+v", len(res.Edits), res.Edits)
+	}
+	if got := res.Edits[0].Text; got != "B" {
+		t.Errorf("text: got %q want %q (no trailing newline appended at EOF)", got, "B")
+	}
+}
+
 // After a didChange, requests compute against the new text and echo the new
 // version — the version-tracking sidekick's persistence gate depends on.
 func TestInlineEdit_UsesLatestVersionAfterChange(t *testing.T) {

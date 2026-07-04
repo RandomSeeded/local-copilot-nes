@@ -110,36 +110,44 @@ func NewDocumentStore() *DocumentStore {
 	return &DocumentStore{docs: make(map[string]document)}
 }
 
+// noLastLine is the sentinel lastLine value meaning "no coalescable edit"
+// (no real first-changed line index is negative).
+const noLastLine = -1
+
 // Open records the full text and version of a newly opened document.
 func (s *DocumentStore) Open(uri, text string, version int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.docs[uri] = document{text: text, version: version}
+	s.docs[uri] = document{text: text, version: version, lastLine: noLastLine}
 }
 
 // Change replaces a document's full text and version (full-sync), recording the
-// changed hunk as a recent edit for chaining. Consecutive edits to the same
-// starting line coalesce into one (keeping the original "before"), so per-
-// keystroke typing becomes a single meaningful before/after rather than a run
-// of fragments.
+// changed hunk as a recent edit for chaining. Consecutive edits that continue
+// the previous one — same first-changed line AND picking up exactly where the
+// last edit left off (its After == the new Before) — coalesce into a single
+// entry, keeping the original "before". So per-keystroke typing becomes one
+// meaningful before/after rather than a run of fragments, without ever merging
+// two unrelated edits that happen to share a starting line.
 func (s *DocumentStore) Change(uri, text string, version int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	d := s.docs[uri]
 	if line, edit, ok := diffEditAtLine(d.text, text); ok {
-		if len(d.recent) > 0 && line == d.lastLine {
-			last := &d.recent[len(d.recent)-1]
+		if n := len(d.recent); n > 0 && line == d.lastLine && d.recent[n-1].After == edit.Before {
+			last := &d.recent[n-1]
 			last.After = edit.After
 			if last.Before == last.After {
-				d.recent = d.recent[:len(d.recent)-1] // typed then reverted
+				d.recent = d.recent[:n-1] // typed then reverted — drop it
+				d.lastLine = noLastLine   // and forget it, so a later edit here won't merge into the wrong entry
 			}
+			// lastLine already == line for a coalesced edit
 		} else {
 			d.recent = append(d.recent, edit)
 			if len(d.recent) > maxRecent {
 				d.recent = d.recent[len(d.recent)-maxRecent:]
 			}
+			d.lastLine = line
 		}
-		d.lastLine = line
 	}
 	d.text = text
 	d.version = version
@@ -222,22 +230,31 @@ func (h *Handler) InlineEdit(ctx context.Context, p InlineEditParams) (InlineEdi
 	// differ. Diff the replaced region against the replacement and emit one tight
 	// edit per changed hunk, so the client highlights only what changes rather
 	// than shading the whole window.
-	doc := splitDocLines(snap.Text)
+	doc := SplitDocLines(snap.Text)
 	start := clamp(c.StartLine, 0, len(doc))
 	end := clamp(c.EndLineInc+1, start, len(doc))
 	region := doc[start:end]
 
+	// A whole-line replacement's text ends in "\n" so the following line stays on
+	// its own line — except when the edit runs through a final line that has no
+	// trailing newline, where appending "\n" would insert a spurious blank line.
+	trailingNL := snap.Text == "" || strings.HasSuffix(snap.Text, "\n")
+
 	edits := make([]NesEdit, 0)
 	for _, hk := range lineHunks(region, c.Lines) {
 		at := start + hk.oldStart
+		endLine := at + hk.oldCount
 		text := ""
 		if len(hk.newLines) > 0 {
-			text = strings.Join(hk.newLines, "\n") + "\n"
+			text = strings.Join(hk.newLines, "\n")
+			if trailingNL || endLine < len(doc) {
+				text += "\n"
+			}
 		}
 		edits = append(edits, NesEdit{
 			Range: Range{
 				Start: Position{Line: at, Character: 0},
-				End:   Position{Line: at + hk.oldCount, Character: 0},
+				End:   Position{Line: endLine, Character: 0},
 			},
 			Text:         text,
 			TextDocument: TextDocumentID{URI: snap.URI, Version: snap.Version},
@@ -258,8 +275,30 @@ type lineHunk struct {
 }
 
 // lineHunks computes minimal contiguous line-level changes between a and b via
-// an LCS, so unchanged lines between changes split into separate hunks.
+// an LCS, so unchanged lines between changes split into separate hunks. The
+// common prefix and suffix are trimmed first so the O(n*m) LCS matrix covers
+// only the genuinely differing span — a whole-window rewrite usually shares a
+// long common prefix/suffix, so this keeps the hot path off a huge allocation.
 func lineHunks(a, b []string) []lineHunk {
+	p := 0
+	for p < len(a) && p < len(b) && a[p] == b[p] {
+		p++
+	}
+	sa, sb := len(a), len(b)
+	for sa > p && sb > p && a[sa-1] == b[sb-1] {
+		sa--
+		sb--
+	}
+	hs := lcsHunks(a[p:sa], b[p:sb])
+	for i := range hs {
+		hs[i].oldStart += p // back into a's coordinate space
+	}
+	return hs
+}
+
+// lcsHunks is lineHunks over already-trimmed slices: contiguous changed hunks
+// with oldStart relative to a.
+func lcsHunks(a, b []string) []lineHunk {
 	n, m := len(a), len(b)
 	lcs := make([][]int, n+1)
 	for i := range lcs {
@@ -303,7 +342,9 @@ func lineHunks(a, b []string) []lineHunk {
 	return hs
 }
 
-func splitDocLines(text string) []string {
+// SplitDocLines splits document text into lines, dropping the empty element a
+// trailing newline produces (so "a\nb\n" and "a\nb" both yield ["a","b"]).
+func SplitDocLines(text string) []string {
 	if text == "" {
 		return []string{}
 	}

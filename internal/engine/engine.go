@@ -64,7 +64,7 @@ func (e *sweepEngine) Complete(ctx context.Context, snap nes.Snapshot) (*nes.Com
 		Current: sourcectx.CurrentSnapshot{
 			File: sourcectx.FileSnapshot{
 				Path:  uriToPath(snap.URI),
-				Lines: splitLines(snap.Text),
+				Lines: nes.SplitDocLines(snap.Text),
 			},
 			// cursortab: Row is 1-indexed, Col is 0-indexed bytes.
 			Cursor: sourcectx.CursorPosition{Row: snap.Cursor.Line + 1, Col: snap.Cursor.Character},
@@ -118,17 +118,6 @@ func buildMaterials(snap nes.Snapshot) sourcectx.Materials {
 			}},
 		},
 	}
-}
-
-func splitLines(text string) []string {
-	if text == "" {
-		return []string{}
-	}
-	lines := strings.Split(text, "\n")
-	if n := len(lines); n > 0 && lines[n-1] == "" {
-		lines = lines[:n-1] // drop the empty element after a trailing newline
-	}
-	return lines
 }
 
 func uriToPath(uri string) string {
