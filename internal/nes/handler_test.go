@@ -75,6 +75,54 @@ func TestInlineEdit_TightensWholeWindowRewriteToChangedHunk(t *testing.T) {
 	}
 }
 
+// Consecutive edits to the same line (e.g. typing a word one keystroke at a
+// time) coalesce into a single meaningful recent edit, so recent_changes carries
+// greet->greetings rather than greet->greeti->greetin->... fragments.
+func TestChange_CoalescesConsecutiveEditsToSameLine(t *testing.T) {
+	s := NewDocumentStore()
+	uri := "file:///a.py"
+	s.Open(uri, "x = greet\n", 1)
+	for i, txt := range []string{"x = greeti\n", "x = greetin\n", "x = greeting\n", "x = greetings\n"} {
+		s.Change(uri, txt, i+2)
+	}
+
+	snap, _ := s.snapshot(uri, Position{})
+	if len(snap.Recent) != 1 {
+		t.Fatalf("want 1 coalesced edit, got %d: %+v", len(snap.Recent), snap.Recent)
+	}
+	if e := snap.Recent[0]; e.Before != "x = greet" || e.After != "x = greetings" {
+		t.Errorf("coalesced edit: got %+v want {greet -> greetings}", e)
+	}
+}
+
+// Edits to different lines stay separate.
+func TestChange_KeepsEditsToDifferentLinesSeparate(t *testing.T) {
+	s := NewDocumentStore()
+	uri := "file:///a.py"
+	s.Open(uri, "a\nb\nc\n", 1)
+	s.Change(uri, "A\nb\nc\n", 2) // line 0
+	s.Change(uri, "A\nb\nC\n", 3) // line 2
+
+	snap, _ := s.snapshot(uri, Position{})
+	if len(snap.Recent) != 2 {
+		t.Fatalf("want 2 separate edits, got %d: %+v", len(snap.Recent), snap.Recent)
+	}
+}
+
+// Typing then deleting back to the original leaves no recent edit.
+func TestChange_CoalesceToNoOpDropsEntry(t *testing.T) {
+	s := NewDocumentStore()
+	uri := "file:///a.py"
+	s.Open(uri, "x = greet\n", 1)
+	s.Change(uri, "x = greeti\n", 2)
+	s.Change(uri, "x = greet\n", 3) // deleted back
+
+	snap, _ := s.snapshot(uri, Position{})
+	if len(snap.Recent) != 0 {
+		t.Fatalf("want 0 edits after revert, got %d: %+v", len(snap.Recent), snap.Recent)
+	}
+}
+
 // After a didChange, requests compute against the new text and echo the new
 // version — the version-tracking sidekick's persistence gate depends on.
 func TestInlineEdit_UsesLatestVersionAfterChange(t *testing.T) {

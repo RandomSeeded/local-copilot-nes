@@ -96,9 +96,10 @@ type DocumentStore struct {
 }
 
 type document struct {
-	text    string
-	version int
-	recent  []Edit
+	text     string
+	version  int
+	recent   []Edit
+	lastLine int // first-changed line of the most recent edit, for coalescing
 }
 
 // maxRecent bounds how many recent edits we keep per document for chaining.
@@ -117,16 +118,28 @@ func (s *DocumentStore) Open(uri, text string, version int) {
 }
 
 // Change replaces a document's full text and version (full-sync), recording the
-// changed hunk as a recent edit for chaining.
+// changed hunk as a recent edit for chaining. Consecutive edits to the same
+// starting line coalesce into one (keeping the original "before"), so per-
+// keystroke typing becomes a single meaningful before/after rather than a run
+// of fragments.
 func (s *DocumentStore) Change(uri, text string, version int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	d := s.docs[uri]
-	if edit, ok := diffEdit(d.text, text); ok {
-		d.recent = append(d.recent, edit)
-		if len(d.recent) > maxRecent {
-			d.recent = d.recent[len(d.recent)-maxRecent:]
+	if line, edit, ok := diffEditAtLine(d.text, text); ok {
+		if len(d.recent) > 0 && line == d.lastLine {
+			last := &d.recent[len(d.recent)-1]
+			last.After = edit.After
+			if last.Before == last.After {
+				d.recent = d.recent[:len(d.recent)-1] // typed then reverted
+			}
+		} else {
+			d.recent = append(d.recent, edit)
+			if len(d.recent) > maxRecent {
+				d.recent = d.recent[len(d.recent)-maxRecent:]
+			}
 		}
+		d.lastLine = line
 	}
 	d.text = text
 	d.version = version
@@ -150,11 +163,12 @@ func (s *DocumentStore) snapshot(uri string, cursor Position) (Snapshot, bool) {
 	}, true
 }
 
-// diffEdit reduces a full-text change to the minimal changed line hunk as a
-// before/after pair. Returns ok=false when there is no prior text or no change.
-func diffEdit(oldText, newText string) (Edit, bool) {
+// diffEditAtLine reduces a full-text change to the minimal changed line hunk as
+// a before/after pair, returning the first changed line index (used to coalesce
+// consecutive edits). Returns ok=false when there is no prior text or no change.
+func diffEditAtLine(oldText, newText string) (line int, e Edit, ok bool) {
 	if oldText == "" || oldText == newText {
-		return Edit{}, false
+		return 0, Edit{}, false
 	}
 	o := strings.Split(oldText, "\n")
 	n := strings.Split(newText, "\n")
@@ -171,9 +185,9 @@ func diffEdit(oldText, newText string) (Edit, bool) {
 	before := strings.Join(o[p:so], "\n")
 	after := strings.Join(n[p:sn], "\n")
 	if before == after {
-		return Edit{}, false
+		return 0, Edit{}, false
 	}
-	return Edit{Before: before, After: after}, true
+	return p, Edit{Before: before, After: after}, true
 }
 
 // Handler answers inline-edit requests against a store and an engine.
