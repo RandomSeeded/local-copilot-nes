@@ -23,6 +23,7 @@ type Config struct {
 	MaxTokens      int     // tokens to generate
 	ContextSize    int     // window-trim budget (tokens); 0 => falls back to MaxTokens
 	Temperature    float64 // usually 0
+	AnchorMaxRatio float64 // how far into the window an edit may anchor (Gap 2); 0 => provider default 0.25
 }
 
 // DefaultConfig points at a local llama-server serving the sweep next-edit model.
@@ -34,6 +35,7 @@ func DefaultConfig() Config {
 		MaxTokens:      256,
 		ContextSize:    8192,
 		Temperature:    0,
+		AnchorMaxRatio: 0.5, // relaxed from the 0.25 default so edits can land further from the cursor
 	}
 }
 
@@ -50,6 +52,7 @@ func NewSweep(cfg Config) nes.Engine {
 		ProviderTemperature: cfg.Temperature,
 		ProviderMaxTokens:   cfg.MaxTokens,
 		ProviderContextSize: cfg.ContextSize,
+		AnchorMaxRatio:      cfg.AnchorMaxRatio,
 		PrivacyMode:         true,
 	}
 	return &sweepEngine{provider: sweep.NewProvider(pc)}

@@ -56,3 +56,33 @@ func TestSweepEngine_ProposesPropagatedEdit(t *testing.T) {
 		t.Errorf("expected greet->greetings propagation on Bob; got:\n%s", got)
 	}
 }
+
+// A cancelled context must abort the engine promptly (aborting the model call)
+// rather than blocking — the server-side half of $/cancelRequest. Deterministic;
+// does not require the model to be running.
+func TestSweepEngine_RespectsContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before the call
+
+	snap := nes.Snapshot{
+		URI:     "file:///a.py",
+		Text:    "x = 1\ny = 2\n",
+		Version: 1,
+		Cursor:  nes.Position{Line: 1, Character: 0},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := NewSweep(DefaultConfig()).Complete(ctx, snap)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("expected an error for a cancelled context, got nil")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Complete did not honor context cancellation (blocked)")
+	}
+}

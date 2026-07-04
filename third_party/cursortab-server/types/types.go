@@ -218,4 +218,10 @@ type ProviderConfig struct {
 	EditorOS            string          // Operating system name (e.g., "Darwin")
 	StateDir            string          // State directory for persistent data (device_id, etc.)
 	DeviceID            string          // Persistent device identifier
+
+	// AnchorMaxRatio bounds how far into the window a prediction's first line may
+	// anchor before it is rejected as misaligned (0 = use the provider default of
+	// 0.25). Raising it lets edits land further from the cursor (local-copilot-nes
+	// Gap 2). [added by local-copilot-nes fork]
+	AnchorMaxRatio float64
 }

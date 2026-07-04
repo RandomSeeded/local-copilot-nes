@@ -20,6 +20,7 @@ func main() {
 	flag.StringVar(&cfg.Model, "model", cfg.Model, "model name")
 	flag.IntVar(&cfg.MaxTokens, "max-tokens", cfg.MaxTokens, "max tokens to generate")
 	flag.IntVar(&cfg.ContextSize, "context-size", cfg.ContextSize, "window-trim token budget")
+	flag.Float64Var(&cfg.AnchorMaxRatio, "anchor-max-ratio", cfg.AnchorMaxRatio, "how far into the window an edit may anchor (Gap 2)")
 	flag.Parse()
 
 	srv := app.New(engine.NewSweep(cfg))

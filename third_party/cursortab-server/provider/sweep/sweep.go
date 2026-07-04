@@ -42,6 +42,15 @@ func NewProvider(config *types.ProviderConfig) *Provider {
 	}
 }
 
+// anchorMaxRatio returns the configured anchor-rejection ratio, or the default
+// of 0.25 when unset. [added by local-copilot-nes fork]
+func (p *Provider) anchorMaxRatio() float64 {
+	if r := p.ProviderConfig().AnchorMaxRatio; r > 0 {
+		return r
+	}
+	return 0.25
+}
+
 func (p *Provider) Complete(ctx context.Context, input sourcectx.CompletionInput) (*types.CompletionResponse, error) {
 	return provider.StartBatch(ctx, input, p.ProviderConfig(), p)
 }
@@ -170,7 +179,7 @@ func (p *Provider) Parse(ctx *provider.RequestState, result *openai.CompletionRe
 	} else {
 		text = stripped
 	}
-	if resp, done := provider.ValidateAnchorPositionText(providerName, ctx, text, 0.25); done {
+	if resp, done := provider.ValidateAnchorPositionText(providerName, ctx, text, p.anchorMaxRatio()); done {
 		return resp, nil
 	}
 	text, endLineInc, resp, done := provider.AnchorTruncationText(providerName, ctx, text, result.FinishReason, result.StoppedEarly, 0.75)
@@ -186,7 +195,7 @@ func (p *Provider) StreamArgs(state *provider.RequestState) provider.OpenAIStrea
 		WindowStart:        windowStart,
 		OldLines:           oldLines,
 		Prefill:            prefillForState(state),
-		FirstLineValidator: provider.FirstLineAnchorChecker(0.25),
+		FirstLineValidator: provider.FirstLineAnchorChecker(p.anchorMaxRatio()),
 	}
 }
 
