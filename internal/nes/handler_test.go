@@ -76,3 +76,23 @@ func TestInlineEdit_UsesLatestVersionAfterChange(t *testing.T) {
 		t.Errorf("echoed version: got %+v want 2", res.Edits)
 	}
 }
+
+// A didChange records the changed hunk as a recent edit, so the snapshot carries
+// the recent_changes signal chaining depends on.
+func TestChange_RecordsRecentEditForChaining(t *testing.T) {
+	s := NewDocumentStore()
+	uri := "file:///a.py"
+	s.Open(uri, "a = 1\nx = greet(1)\nc = 3\n", 1)
+	s.Change(uri, "a = 1\nx = greetings(1)\nc = 3\n", 2)
+
+	snap, ok := s.snapshot(uri, Position{Line: 1})
+	if !ok {
+		t.Fatal("no snapshot")
+	}
+	if len(snap.Recent) != 1 {
+		t.Fatalf("want 1 recent edit, got %d: %+v", len(snap.Recent), snap.Recent)
+	}
+	if e := snap.Recent[0]; e.Before != "x = greet(1)" || e.After != "x = greetings(1)" {
+		t.Errorf("recent edit: got %+v", e)
+	}
+}

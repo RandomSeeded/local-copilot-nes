@@ -98,7 +98,11 @@ type DocumentStore struct {
 type document struct {
 	text    string
 	version int
+	recent  []Edit
 }
+
+// maxRecent bounds how many recent edits we keep per document for chaining.
+const maxRecent = 10
 
 // NewDocumentStore returns an empty store.
 func NewDocumentStore() *DocumentStore {
@@ -112,11 +116,21 @@ func (s *DocumentStore) Open(uri, text string, version int) {
 	s.docs[uri] = document{text: text, version: version}
 }
 
-// Change replaces a document's full text and version (full-sync).
+// Change replaces a document's full text and version (full-sync), recording the
+// changed hunk as a recent edit for chaining.
 func (s *DocumentStore) Change(uri, text string, version int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.docs[uri] = document{text: text, version: version}
+	d := s.docs[uri]
+	if edit, ok := diffEdit(d.text, text); ok {
+		d.recent = append(d.recent, edit)
+		if len(d.recent) > maxRecent {
+			d.recent = d.recent[len(d.recent)-maxRecent:]
+		}
+	}
+	d.text = text
+	d.version = version
+	s.docs[uri] = d
 }
 
 // snapshot builds a Snapshot for uri at cursor, or ok=false if unknown.
@@ -127,7 +141,39 @@ func (s *DocumentStore) snapshot(uri string, cursor Position) (Snapshot, bool) {
 	if !ok {
 		return Snapshot{}, false
 	}
-	return Snapshot{URI: uri, Text: d.text, Version: d.version, Cursor: cursor}, true
+	return Snapshot{
+		URI:     uri,
+		Text:    d.text,
+		Version: d.version,
+		Cursor:  cursor,
+		Recent:  append([]Edit(nil), d.recent...),
+	}, true
+}
+
+// diffEdit reduces a full-text change to the minimal changed line hunk as a
+// before/after pair. Returns ok=false when there is no prior text or no change.
+func diffEdit(oldText, newText string) (Edit, bool) {
+	if oldText == "" || oldText == newText {
+		return Edit{}, false
+	}
+	o := strings.Split(oldText, "\n")
+	n := strings.Split(newText, "\n")
+
+	p := 0
+	for p < len(o) && p < len(n) && o[p] == n[p] {
+		p++
+	}
+	so, sn := len(o), len(n)
+	for so > p && sn > p && o[so-1] == n[sn-1] {
+		so--
+		sn--
+	}
+	before := strings.Join(o[p:so], "\n")
+	after := strings.Join(n[p:sn], "\n")
+	if before == after {
+		return Edit{}, false
+	}
+	return Edit{Before: before, After: after}, true
 }
 
 // Handler answers inline-edit requests against a store and an engine.
