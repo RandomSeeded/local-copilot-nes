@@ -33,7 +33,9 @@ func DefaultConfig() Config {
 		CompletionPath: "/v1/completions",
 		Model:          "sweep-next-edit-1.5B",
 		MaxTokens:      256,
-		ContextSize:    8192,
+		ContextSize:    256, // == MaxTokens: the engine's own 1:1 coupling (flow.go:95-96). The
+		// rewrite window spans cursor→end-of-window and must fit in MaxTokens, so ContextSize
+		// must stay ~<= MaxTokens or the window truncates / the edit is lost in a whole-file rewrite.
 		Temperature:    0,
 		AnchorMaxRatio: 0.5, // relaxed from the 0.25 default so edits can land further from the cursor
 	}
